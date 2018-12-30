@@ -18,32 +18,48 @@ import java.time.format.DateTimeFormatter;
 import java.util.Collection;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-public class App {
+public class PhotoOrganizer {
+
+    private static final String DATE_TIME_FORMAT_PATTERN = "yyyy-MM-dd'T'HH:mm:ss z";
+    private static final DateFormat DATE_TIME_FORMATTER = new SimpleDateFormat(DATE_TIME_FORMAT_PATTERN);
 
     public static void main(String[] args) throws IOException {
         Path rootPath = Paths.get(args[0]);
         Path destinationRootPath = Paths.get(args[1]);
-        List<Path> filePaths = Files.find(rootPath, 20, (p, bfa) -> bfa.isRegularFile())
-                .collect(Collectors.toList());
+
+        PhotoOrganizer organizer = new PhotoOrganizer(destinationRootPath);
+        List<Path> filePaths = organizer.getAllFiles(rootPath).collect(Collectors.toList());
 
         System.out.printf("Found %d files%n", filePaths.size());
 
-        for (int i = 0; i < filePaths.size(); i++) {
-            Path path = filePaths.get(i);
-            System.out.printf("Processing '%s': (%d/%d)%n", path, i, filePaths.size());
-            copyToDestination(path, destinationRootPath);
+        Map<Classification, List<MetadataEntry>> result = filePaths
+                .stream()
+                .peek(p -> System.out.printf("Processing '%s'%n", p))
+                .map(organizer::getMetadata)
+                .peek(m -> System.out.printf("Processed '%s', classified as: %s%n", m.path, m.classification))
+                .collect(Collectors.groupingBy(MetadataEntry::getClassification));
+
+        for (Map.Entry<Classification, List<MetadataEntry>> entry : result.entrySet()) {
+            // copyToDestination(path, destinationRootPath);
         }
     }
 
-    private static void copyToDestination(Path sourcePath, Path destinationRootPath) {
-        if (sourcePath.startsWith(destinationRootPath)) {
-            System.out.println("Skipping: file is already in destination already");
-            return;
-        }
+    private final Path destinationRootPath;
 
+    public PhotoOrganizer(Path destinationRootPath) {
+        this.destinationRootPath = destinationRootPath;
+    }
+
+    private Stream<Path> getAllFiles(Path rootPath) throws IOException {
+        return Files.find(rootPath, 20, (p, bfa) -> bfa.isRegularFile());
+    }
+
+    private void copyToDestination(Path sourcePath) {
         MetadataEntry entry = getMetadata(sourcePath);
         if (entry == null) {
             System.out.println("Skipping: null metadata");
@@ -84,17 +100,16 @@ public class App {
         }
     }
 
-    private static MetadataEntry getMetadata(Path path) {
+    private MetadataEntry getMetadata(Path path) {
         try {
-            return new MetadataEntry(path, ImageMetadataReader.readMetadata(path.toFile()));
+            Metadata metadata = ImageMetadataReader.readMetadata(path.toFile());
+            Classification classification = classify(path, metadata);
+            return new MetadataEntry(path, metadata, classification, getDateBucket);
         } catch (Exception e) {
 //            System.err.printf("Exception reading metadata for file '%s': %s%n", path, e);
             return null;
         }
     }
-
-    private static final String DATE_TIME_FORMAT_PATTERN = "yyyy-MM-dd'T'HH:mm:ss z";
-    private static final DateFormat DATE_TIME_FORMATTER = new SimpleDateFormat(DATE_TIME_FORMAT_PATTERN);
 
     private static String buildReport(MetadataEntry entry) {
         StringBuilder builder = new StringBuilder();
@@ -109,6 +124,14 @@ public class App {
         }
 
         return builder.toString();
+    }
+
+    private Classification classify(Path path, Metadata entry) {
+        if (path.startsWith(destinationRootPath)) {
+            return Classification.SKIPPED_PATH_IN_DESTINATION;
+        }
+
+        return Classification.NEEDS_REVIEW;
     }
 
     private static Optional<Date> getDate(Metadata metadata) {
@@ -133,13 +156,35 @@ public class App {
         }
     }
 
+    private enum Classification {
+        SKIPPED_PATH_IN_DESTINATION,
+        SKIPPED_UNKNOWN_FORMAT,
+        SKIPPED_UNKNOWED_TIMESTAMP,
+        SKIPPED_ALREADY_PRESENT,
+        NEEDS_REVIEW,
+        COPIED
+    }
+
     private static class MetadataEntry {
         private final Path path;
         private final Metadata metadata;
+        private final Classification classification;
+        private final Optional<String> dateBucket;
 
-        private MetadataEntry(Path path, Metadata metadata) {
+        private MetadataEntry(
+                Path path,
+                Metadata metadata,
+                Classification classification,
+                Optional<String> dateBucket
+        ) {
             this.path = path;
             this.metadata = metadata;
+            this.classification = classification;
+            this.dateBucket = dateBucket;
+        }
+
+        public Classification getClassification() {
+            return classification;
         }
     }
 
